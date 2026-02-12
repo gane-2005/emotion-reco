@@ -24,14 +24,20 @@ model = None
 scaler = None
 
 try:
+    print(f"DEBUG: Checking model at {config.MODEL_PATH}")
+    print(f"DEBUG: Checking scaler at {config.SCALER_PATH}")
+    
     if os.path.exists(config.MODEL_PATH) and os.path.exists(config.SCALER_PATH):
+        print("DEBUG: Files exist. Attempting to load...")
         model = joblib.load(config.MODEL_PATH)
         scaler = joblib.load(config.SCALER_PATH)
         print("✅ Model and scaler loaded successfully")
     else:
+        print(f"❌ Model or scaler not found at {config.MODEL_PATH} or {config.SCALER_PATH}")
         print("⚠️  Model not found. Please train the model first using train_model.py")
 except Exception as e:
     print(f"⚠️  Error loading model: {e}")
+    traceback.print_exc()
 
 
 def allowed_file(filename):

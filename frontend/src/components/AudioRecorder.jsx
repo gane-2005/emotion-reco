@@ -7,189 +7,184 @@ function AudioRecorder({ onPredictionComplete, onLoading }) {
     const [recordingTime, setRecordingTime] = useState(0);
     const [error, setError] = useState('');
 
-    const contextRef = useRef(null);
+    const audioContextRef = useRef(null);
     const processorRef = useRef(null);
     const sourceRef = useRef(null);
     const streamRef = useRef(null);
-
-    // Use a useRef for the chunks because the processor callback runs outside React state context
-    const audioChunksRef = useRef([]);
+    const chunksRef = useRef([]);
     const recordingLengthRef = useRef(0);
-
     const timerRef = useRef(null);
+    const canvasRef = useRef(null);
+    const animationRef = useRef(null);
 
-    // Cleanup function when component unmounts
     useEffect(() => {
         return () => {
-            stopRecordingProcess();
+            stopStream();
+            if (timerRef.current) clearInterval(timerRef.current);
+            if (animationRef.current) cancelAnimationFrame(animationRef.current);
         };
     }, []);
+
+    const stopStream = () => {
+        if (processorRef.current) {
+            processorRef.current.disconnect();
+            processorRef.current = null;
+        }
+        if (sourceRef.current) {
+            sourceRef.current.disconnect();
+            sourceRef.current = null;
+        }
+        if (audioContextRef.current) {
+            audioContextRef.current.close().catch(() => { });
+            audioContextRef.current = null;
+        }
+        if (streamRef.current) {
+            streamRef.current.getTracks().forEach(track => track.stop());
+            streamRef.current = null;
+        }
+    };
+
+    const drawWaveform = (analyser) => {
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+
+        const draw = () => {
+            if (!isRecording) return;
+            animationRef.current = requestAnimationFrame(draw);
+            analyser.getByteFrequencyData(dataArray);
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const barWidth = (canvas.width / bufferLength) * 2.5;
+            let barHeight;
+            let x = 0;
+
+            for (let i = 0; i < bufferLength; i++) {
+                barHeight = dataArray[i] / 2;
+                ctx.fillStyle = `rgb(${barHeight + 100}, 100, 255)`;
+                ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+                x += barWidth + 1;
+            }
+        };
+        draw();
+    };
 
     const startRecording = async () => {
         try {
             setError('');
+            chunksRef.current = [];
+            recordingLengthRef.current = 0;
 
-            // Get audio stream
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             streamRef.current = stream;
 
-            // Initialize AudioContext
-            contextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-            const context = contextRef.current;
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            const audioContext = new AudioContext();
+            audioContextRef.current = audioContext;
 
-            // Create source
-            sourceRef.current = context.createMediaStreamSource(stream);
-            const source = sourceRef.current;
+            const source = audioContext.createMediaStreamSource(stream);
+            sourceRef.current = source;
 
-            // Create processor (bufferSize, inputChannels, outputChannels)
-            // 4096 is a good balance for latency/performance
-            processorRef.current = context.createScriptProcessor(4096, 1, 1);
-            const processor = processorRef.current;
+            const analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            source.connect(analyser);
 
+            // Using ScriptProcessor for simple PCM capture
+            const processor = audioContext.createScriptProcessor(4096, 1, 1);
+            processorRef.current = processor;
 
-            // Reset buffers
-            audioChunksRef.current = [];
-            recordingLengthRef.current = 0;
-
-            // Handle audio processing
             processor.onaudioprocess = (e) => {
-                if (!isRecording && audioChunksRef.current.length === 0 && !streamRef.current) return; // Guard clause
-
                 const inputData = e.inputBuffer.getChannelData(0);
-
-                // Clone the data (important because buffers are reused)
-                const dataCopy = new Float32Array(inputData);
-                audioChunksRef.current.push(dataCopy);
-                recordingLengthRef.current += dataCopy.length;
+                chunksRef.current.push(new Float32Array(inputData));
+                recordingLengthRef.current += inputData.length;
             };
 
-            // Connect nodes: source -> processor -> destination
             source.connect(processor);
-            processor.connect(context.destination);
+            processor.connect(audioContext.destination);
 
             setIsRecording(true);
             setRecordingTime(0);
+            drawWaveform(analyser);
 
-            // Start timer
             timerRef.current = setInterval(() => {
                 setRecordingTime(prev => prev + 1);
             }, 1000);
 
         } catch (err) {
-            console.error('Error accessing microphone:', err);
-            setError('Failed to access microphone. Please grant permission.');
+            console.error('Mic Access Error:', err);
+            setError('Microphone access denied or not supported.');
         }
     };
 
-    const stopRecordingHelper = async () => {
-        // Stop gathering data
+    const stopRecording = async () => {
+        if (!isRecording) return;
+
         setIsRecording(false);
         if (timerRef.current) clearInterval(timerRef.current);
+        if (animationRef.current) cancelAnimationFrame(animationRef.current);
 
-        // Process audio data
-        if (audioChunksRef.current.length > 0) {
-            const sampleRate = contextRef.current.sampleRate;
+        const sampleRate = audioContextRef.current ? audioContextRef.current.sampleRate : 44100;
+        const flatData = flattenArray(chunksRef.current, recordingLengthRef.current);
+        const wavView = encodeWAV(flatData, sampleRate);
+        const blob = new Blob([wavView], { type: 'audio/wav' });
+        const file = new File([blob], `recording-${Date.now()}.wav`, { type: 'audio/wav' });
 
-            // Flatten and Encode
-            const flatData = flattenArray(audioChunksRef.current, recordingLengthRef.current);
-            const wavData = encodeWAV(flatData, sampleRate);
-
-            const blob = new Blob([wavData], { type: 'audio/wav' });
-            const file = new File([blob], `recording-${Date.now()}.wav`, { type: 'audio/wav' });
-
-            // Upload
-            await handleUpload(file);
-        }
-
-        // Cleanup resources
-        stopRecordingProcess();
-    };
-
-    const stopRecordingProcess = () => {
-        if (processorRef.current && sourceRef.current) {
-            sourceRef.current.disconnect();
-            processorRef.current.disconnect();
-        }
-
-        if (contextRef.current && contextRef.current.state !== 'closed') {
-            contextRef.current.close();
-        }
-
-        if (streamRef.current) {
-            streamRef.current.getTracks().forEach(track => track.stop());
-            streamRef.current = null;
-        }
-
-        // Clear refs
-        processorRef.current = null;
-        sourceRef.current = null;
-        contextRef.current = null;
+        stopStream();
+        await handleUpload(file);
     };
 
     const handleUpload = async (file) => {
         try {
             onLoading(true);
             const result = await predictEmotion(file);
-
             if (result.success) {
                 onPredictionComplete(result);
             } else {
                 setError(result.error || 'Prediction failed');
             }
         } catch (err) {
-            console.error('Prediction error:', err);
-            setError(err.error || 'Failed to analyze recording. Please ensure the backend is running.');
+            console.error('Recording Error:', err);
+            const msg = err.detail || err.error || 'Failed to reach server. Ensure backend is running.';
+            setError(msg);
         } finally {
             onLoading(false);
         }
     };
 
     const formatTime = (seconds) => {
-        const mins = Math.floor(seconds / 60);
-        const secs = seconds % 60;
-        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+        const s = (seconds % 60).toString().padStart(2, '0');
+        return `${m}:${s}`;
     };
 
     return (
         <div className="audio-recorder">
             <div className="recorder-container">
+                <canvas
+                    ref={canvasRef}
+                    width="300"
+                    height="60"
+                    className={`visualizer ${isRecording ? 'active' : ''}`}
+                />
+
                 {!isRecording ? (
-                    <button
-                        className="record-button start"
-                        onClick={startRecording}
-                        title="Start Recording"
-                    >
-                        <span className="record-icon">🎙️</span>
-                        <span className="record-text">Start Recording</span>
+                    <button className="record-button start" onClick={startRecording}>
+                        <span className="record-icon">🎙️</span> Start Recording
                     </button>
                 ) : (
                     <div className="recording-active">
-                        <div className="recording-indicator">
+                        <div className="recording-info">
                             <span className="pulse"></span>
-                            <span className="recording-text">Recording...</span>
+                            <span className="timer">{formatTime(recordingTime)}</span>
                         </div>
-                        <div className="recording-time">{formatTime(recordingTime)}</div>
-                        <button
-                            className="record-button stop"
-                            onClick={stopRecordingHelper}
-                            title="Stop Recording"
-                        >
-                            <span className="stop-icon">⏹️</span>
-                            <span className="stop-text">Stop & Analyze</span>
+                        <button className="record-button stop" onClick={stopRecording}>
+                            <span className="stop-icon">⏹️</span> Stop & Analyze
                         </button>
                     </div>
                 )}
             </div>
-
-            {error && (
-                <div className="error-message">
-                    <span className="error-icon">❌</span> {error}
-                </div>
-            )}
-
-            <p className="recorder-hint">
-                💡 Speak clearly for 3-5 seconds for best results
-            </p>
+            {error && <div className="error-message">❌ {error}</div>}
         </div>
     );
 }

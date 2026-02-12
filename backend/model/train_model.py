@@ -1,49 +1,59 @@
-"""
-Improved Model Training - Creates a better demo model with varied emotion predictions
-
-This version creates a more realistic demo model that will show different emotions
-for different audio files, even without the RAVDESS dataset.
-"""
-
 import os
 import sys
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, classification_report
-import joblib
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import glob
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.feature_extraction import extract_features
+from utils.feature_extraction import extract_features, extract_features_with_augmentation
+from model.model_pytorch import get_model
 import config
 
+class EmotionDataset(Dataset):
+    def __init__(self, features, labels):
+        self.features = torch.FloatTensor(features)
+        self.labels = torch.LongTensor(labels)
+        
+    def __len__(self):
+        return len(self.features)
+    
+    def __getitem__(self, idx):
+        return self.features[idx], self.labels[idx]
 
-def load_ravdess_data(dataset_path):
-    """Load RAVDESS dataset and extract features."""
+def load_data(dataset_path, use_augmentation=True, fixed_length=200):
+    """Load RAVDESS dataset with optional augmentation."""
     features = []
     labels = []
     
     emotion_map = {
-        '01': 'Neutral',
-        '02': 'Neutral',  # Calm -> Neutral
-        '03': 'Happy',
-        '04': 'Sad',
-        '05': 'Angry',
-        '06': 'Fear',
-        '07': 'Disgust',
-        '08': 'Surprise'
+        '01': 6, # Neutral
+        '02': 6, # Calm -> Neutral
+        '03': 0, # Happy
+        '04': 1, # Sad
+        '05': 2, # Angry
+        '06': 3, # Fear
+        '07': 5, # Disgust
+        '08': 4  # Surprise
     }
+    
+    # Map index back to string for config/display if needed
+    # config.EMOTIONS = ['Happy', 'Sad', 'Angry', 'Fear', 'Surprise', 'Disgust', 'Neutral']
     
     audio_files = glob.glob(os.path.join(dataset_path, '**', '*.wav'), recursive=True)
     
     if not audio_files:
+        print(f"⚠️ No files found in {dataset_path}")
         return None, None
     
-    print(f"📂 Found {len(audio_files)} audio files")
-    print("🔄 Extracting features... This may take a few minutes.")
+    print(f"📂 Found {len(audio_files)} audio files. Extracting features...")
     
     for i, filepath in enumerate(audio_files):
         try:
@@ -52,206 +62,126 @@ def load_ravdess_data(dataset_path):
             
             if len(parts) >= 3:
                 emotion_code = parts[2]
-                emotion = emotion_map.get(emotion_code, None)
+                label = emotion_map.get(emotion_code, None)
                 
-                if emotion:
-                    feature = extract_features(filepath)
-                    
-                    if feature is not None:
-                        features.append(feature)
-                        labels.append(emotion)
-                        
-                        if (i + 1) % 100 == 0:
-                            print(f"  Processed {i + 1}/{len(audio_files)} files...")
-        
+                if label is not None:
+                    if use_augmentation:
+                        # Extract multiple features (original + augmented)
+                        aug_features = extract_features_with_augmentation(filepath)
+                        for feat in aug_features:
+                            # Pad/Truncate each
+                            if feat.shape[1] < fixed_length:
+                                feat = np.pad(feat, ((0,0), (0, fixed_length - feat.shape[1])), mode='constant')
+                            else:
+                                feat = feat[:, :fixed_length]
+                            features.append(feat)
+                            labels.append(label)
+                    else:
+                        feat = extract_features(filepath, fixed_length=fixed_length)
+                        if feat is not None:
+                            features.append(feat)
+                            labels.append(label)
+                            
+            if (i + 1) % 100 == 0:
+                print(f"  Processed {i + 1}/{len(audio_files)} files...")
         except Exception as e:
             continue
-    
-    print(f"✅ Successfully extracted features from {len(features)} files")
-    
-    return np.array(features) if features else None, np.array(labels) if labels else None
+            
+    return np.array(features), np.array(labels)
 
-
-def create_improved_demo_model():
-    """
-    Create an IMPROVED demo model with more realistic feature distributions.
-    This will produce more varied predictions than the simple demo model.
-    """
-    print("\n⚠️  Creating IMPROVED demo model with realistic feature distributions...")
-    print("   NOTE: For best results, use the RAVDESS dataset.\n")
+def train_pytorch_model(dataset_path):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"🚀 Training on {device}")
     
-    np.random.seed(42)
-    
-    # Create more samples for better training
-    n_samples_per_emotion = 150
-    n_features = 40 + 12 + 128  # MFCC + Chroma + Mel
-    
-    X_list = []
-    y_list = []
-    
-    # Create distinct feature patterns for each emotion
-    emotion_patterns = {
-        'Happy': {'mean': 2.0, 'std': 1.5},
-        'Sad': {'mean': -1.5, 'std': 1.0},
-        'Angry': {'mean': 3.0, 'std': 2.0},
-        'Fear': {'mean': -0.5, 'std': 1.8},
-        'Surprise': {'mean': 1.5, 'std': 2.5},
-        'Disgust': {'mean': -2.0, 'std': 1.3},
-        'Neutral': {'mean': 0.0, 'std': 1.0}
-    }
-    
-    for emotion, pattern in emotion_patterns.items():
-        # Generate features with emotion-specific distributions
-        features = np.random.normal(
-            loc=pattern['mean'],
-            scale=pattern['std'],
-            size=(n_samples_per_emotion, n_features)
-        )
-        
-        # Add some feature-specific variations
-        # MFCCs (first 40 features) have different characteristics
-        features[:, :40] *= np.random.uniform(0.8, 1.2, 40)
-        
-        # Chroma features (next 12) have different range
-        features[:, 40:52] *= np.random.uniform(0.5, 1.5, 12)
-        
-        # Mel features (last 128) have different scale
-        features[:, 52:] *= np.random.uniform(0.9, 1.1, 128)
-        
-        X_list.append(features)
-        y_list.extend([emotion] * n_samples_per_emotion)
-    
-    X = np.vstack(X_list)
-    y = np.array(y_list)
-    
-    # Split data
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-    
-    # Scale features
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-    
-    # Train model with better parameters
-    model = RandomForestClassifier(
-        n_estimators=200,
-        random_state=42,
-        max_depth=30,
-        min_samples_split=5,
-        min_samples_leaf=2,
-        class_weight='balanced',  # Better handling of class distribution
-        n_jobs=-1
-    )
-    
-    model.fit(X_train_scaled, y_train)
-    
-    # Evaluate
-    y_pred = model.predict(X_test_scaled)
-    accuracy = accuracy_score(y_test, y_pred)
-    
-    print(f"✅ Improved Demo Model Accuracy: {accuracy:.2%}")
-    print("\n📊 This model will show MORE VARIED predictions than the basic demo.")
-    print("💡 For production quality (65-75% real accuracy), train on RAVDESS dataset.\n")
-    
-    return model, scaler
-
-
-def train_model(dataset_path):
-    """Train the emotion classification model."""
-    
-    print("\n" + "="*60)
-    print("🎓 Training Speech Emotion Analysis Model")
-    print("="*60 + "\n")
-    
-    # Try to load real dataset first
-    X, y = load_ravdess_data(dataset_path)
-    
-    # If no real data, create improved demo model
+    X, y = load_data(dataset_path)
     if X is None or len(X) == 0:
-        print(f"📊 No RAVDESS dataset found in {dataset_path}")
-        model, scaler = create_improved_demo_model()
-    else:
-        # Train on real data
-        print(f"\n📊 Dataset Statistics:")
-        print(f"   Total samples: {len(X)}")
-        print(f"   Feature dimensions: {X.shape[1]}")
-        print(f"   Emotion distribution:")
-        
-        unique, counts = np.unique(y, return_counts=True)
-        for emotion, count in zip(unique, counts):
-            print(f"     - {emotion}: {count}")
-        
-        print("\n🔀 Splitting data (80% train, 20% test)...")
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
-        )
-        
-        print(f"   Training samples: {len(X_train)}")
-        print(f"   Testing samples: {len(X_test)}")
-        
-        print("\n📏 Scaling features...")
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-        
-        print("\n🚀 Training RandomForestClassifier...")
-        model = RandomForestClassifier(
-            n_estimators=200,
-            random_state=42,
-            max_depth=30,
-            min_samples_split=5,
-            min_samples_leaf=2,
-            n_jobs=-1,
-            verbose=1
-        )
-        
-        model.fit(X_train_scaled, y_train)
-        
-        print("\n📈 Evaluating model...")
-        y_pred = model.predict(X_test_scaled)
-        accuracy = accuracy_score(y_test, y_pred)
-        
-        print(f"\n✅ Model Accuracy: {accuracy:.2%}")
-        print("\n📊 Classification Report:")
-        print(classification_report(y_test, y_pred))
-    
-    # Save model and scaler
-    print("\n💾 Saving model and scaler...")
-    
-    model_dir = os.path.dirname(config.MODEL_PATH)
-    os.makedirs(model_dir, exist_ok=True)
-    
-    joblib.dump(model, config.MODEL_PATH)
-    joblib.dump(scaler, config.SCALER_PATH)
-    
-    print(f"   Model saved to: {config.MODEL_PATH}")
-    print(f"   Scaler saved to: {config.SCALER_PATH}")
-    
-    print("\n" + "="*60)
-    print("✅ Training Complete!")
-    print("="*60)
-    print("\n🎯 Next Steps:")
-    print("   1. Restart the backend server")
-    print("   2. Test with different audio files")
-    print("   3. You should see MORE VARIED emotion predictions!")
-    print("\n💡 To get 65-75% real accuracy:")
-    print("   - Download RAVDESS: https://zenodo.org/record/1188976")
-    print(f"   - Extract to: {dataset_path}")
-    print("   - Run this script again\n")
-    
-    return model, scaler
+        print("❌ No data found. Training aborted.")
+        return
 
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    
+    train_dataset = EmotionDataset(X_train, y_train)
+    test_dataset = EmotionDataset(X_test, y_test)
+    
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=32)
+    
+    # Calculate class weights for imbalance
+    class_counts = np.bincount(y)
+    weights = 1.0 / class_counts
+    weights = weights / weights.sum() * len(config.EMOTIONS)
+    class_weights = torch.FloatTensor(weights).to(device)
+    
+    model = get_model(num_classes=len(config.EMOTIONS)).to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    
+    epochs = 50
+    best_acc = 0
+    
+    print("\n🎬 Starting Training Loop")
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0
+        for inputs, targets in train_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+            
+        # Validation
+        model.eval()
+        all_preds = []
+        all_targets = []
+        with torch.no_grad():
+            for inputs, targets in test_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                outputs = model(inputs)
+                _, preds = torch.max(outputs, 1)
+                all_preds.extend(preds.cpu().numpy())
+                all_targets.extend(targets.cpu().numpy())
+        
+        val_acc = accuracy_score(all_targets, all_preds)
+        if val_acc > best_acc:
+            best_acc = val_acc
+            torch.save(model.state_dict(), os.path.join(os.path.dirname(__file__), "emotion_model.pth"))
+            print(f"🌟 Epoch {epoch+1}/{epochs} - Loss: {train_loss/len(train_loader):.4f} - Val Acc: {val_acc:.4f} (Saved!)")
+        elif (epoch + 1) % 5 == 0:
+            print(f"   Epoch {epoch+1}/{epochs} - Loss: {train_loss/len(train_loader):.4f} - Val Acc: {val_acc:.4f}")
+
+    print(f"\n✅ Training Finished. Best Val Accuracy: {best_acc:.4f}")
+    
+    # Final Evaluation Report
+    model.load_state_dict(torch.load(os.path.join(os.path.dirname(__file__), "emotion_model.pth")))
+    model.eval()
+    final_preds = []
+    final_targets = []
+    with torch.no_grad():
+        for inputs, targets in test_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = model(inputs)
+            _, preds = torch.max(outputs, 1)
+            final_preds.extend(preds.cpu().numpy())
+            final_targets.extend(targets.cpu().numpy())
+            
+    print("\n📊 Classification Report:")
+    print(classification_report(final_targets, final_preds, target_names=config.EMOTIONS))
+    
+    # Save Confusion Matrix plot
+    cm = confusion_matrix(final_targets, final_preds)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=config.EMOTIONS, yticklabels=config.EMOTIONS)
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.title('Confusion Matrix')
+    plt.savefig(os.path.join(os.path.dirname(__file__), "confusion_matrix.png"))
+    print(f"🖼️ Confusion matrix saved to model/confusion_matrix.png")
 
 if __name__ == '__main__':
-    dataset_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        '..',
-        'dataset',
-        'RAVDESS'
-    )
-    
-    print(f"Looking for dataset in: {dataset_path}")
-    
-    train_model(dataset_path)
+    dataset_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'dataset', 'RAVDESS')
+    train_pytorch_model(dataset_path)

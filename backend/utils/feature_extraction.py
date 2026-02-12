@@ -1,129 +1,117 @@
 import numpy as np
 import librosa
 import soundfile as sf
+import os
+from pydub import AudioSegment
+import io
 
-
-def extract_features(audio_path, duration=3):
+def preprocess_audio(audio_path, target_sr=16000):
     """
-    Extract audio features for emotion classification.
-    
-    Args:
-        audio_path: Path to the audio file
-        duration: Duration to load (seconds)
-        
-    Returns:
-        numpy array of extracted features
+    Load and preprocess audio: resample, convert to mono, trim silence, and normalize.
     """
     try:
-        # Load audio file
-        audio, sample_rate = librosa.load(audio_path, duration=duration, sr=22050)
+        # Load audio with librosa
+        audio, sr = librosa.load(audio_path, sr=target_sr, mono=True)
         
-        # Extract MFCC features (40 coefficients)
-        mfcc = np.mean(librosa.feature.mfcc(y=audio, sr=sample_rate, n_mfcc=40).T, axis=0)
+        # Trim silence
+        audio, _ = librosa.effects.trim(audio)
         
-        # Extract Chroma features
-        chroma = np.mean(librosa.feature.chroma_stft(y=audio, sr=sample_rate).T, axis=0)
-        
-        # Extract Mel Spectrogram
-        mel = np.mean(librosa.feature.melspectrogram(y=audio, sr=sample_rate).T, axis=0)
-        
-        # Combine all features
-        features = np.concatenate([mfcc, chroma, mel])
-        
-        return features
-    
+        # Normalize
+        if len(audio) > 0:
+            audio = librosa.util.normalize(audio)
+            
+        return audio, sr
     except Exception as e:
-        print(f"Error extracting features: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+        print(f"Error preprocessing audio {audio_path}: {e}")
+        return None, None
 
-
-def extract_features_with_augmentation(audio_path, duration=3):
+def extract_log_mel_spectrogram(audio, sr=16000, n_mels=128, n_fft=2048, hop_length=512):
     """
-    Extract features with data augmentation for training.
-    
-    Args:
-        audio_path: Path to the audio file
-        duration: Duration to load (seconds)
-        
-    Returns:
-        list of feature arrays (original + augmented)
+    Extract Log-Mel Spectrogram features.
     """
-    features_list = []
-    
     try:
-        # Load audio
-        audio, sample_rate = librosa.load(audio_path, duration=duration, sr=22050)
-        
-        # Original features
-        features_list.append(extract_features_from_audio(audio, sample_rate))
-        
-        # Add noise
-        noise = np.random.randn(len(audio))
-        audio_with_noise = audio + 0.005 * noise
-        features_list.append(extract_features_from_audio(audio_with_noise, sample_rate))
-        
-        # Time stretch
-        audio_stretched = librosa.effects.time_stretch(audio, rate=0.9)
-        features_list.append(extract_features_from_audio(audio_stretched, sample_rate))
-        
-        # Pitch shift
-        audio_pitch_shifted = librosa.effects.pitch_shift(audio, sr=sample_rate, n_steps=2)
-        features_list.append(extract_features_from_audio(audio_pitch_shifted, sample_rate))
-        
-        return features_list
-    
-    except Exception as e:
-        print(f"Error in augmentation: {e}")
-        return [extract_features(audio_path, duration)]
-
-
-def extract_features_from_audio(audio, sample_rate):
-    """Extract features from audio array."""
-    try:
-        # MFCC
-        mfcc = np.mean(librosa.feature.mfcc(y=audio, sr=sample_rate, n_mfcc=40).T, axis=0)
-        
-        # Chroma
-        chroma = np.mean(librosa.feature.chroma_stft(y=audio, sr=sample_rate).T, axis=0)
-        
         # Mel Spectrogram
-        mel = np.mean(librosa.feature.melspectrogram(y=audio, sr=sample_rate).T, axis=0)
+        mel_spec = librosa.feature.melspectrogram(y=audio, sr=sr, n_mels=n_mels, 
+                                                 n_fft=n_fft, hop_length=hop_length)
         
-        # Combine
-        features = np.concatenate([mfcc, chroma, mel])
+        # Convert to log scale (power to db)
+        log_mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
         
-        return features
-    
+        return log_mel_spec
     except Exception as e:
-        print(f"Error extracting features from audio: {e}")
+        print(f"Error extracting Mel Spectrogram: {e}")
         return None
 
-
-def analyze_audio_properties(audio_path):
+def extract_features(audio_path, target_sr=16000, fixed_length=None):
     """
-    Analyze audio file properties.
+    Unified feature extraction for both inference and training.
+    """
+    audio, sr = preprocess_audio(audio_path, target_sr=target_sr)
+    if audio is None:
+        return None
     
-    Returns:
-        dict with audio properties
+    # Extract Log-Mel Spectrogram
+    mel_spec = extract_log_mel_spectrogram(audio, sr=sr)
+    
+    if fixed_length and mel_spec is not None:
+        # Pad or truncate to a fixed sequence length
+        if mel_spec.shape[1] < fixed_length:
+            pad_width = fixed_length - mel_spec.shape[1]
+            mel_spec = np.pad(mel_spec, ((0,0), (0, pad_width)), mode='constant')
+        else:
+            mel_spec = mel_spec[:, :fixed_length]
+            
+    return mel_spec
+
+# Data Augmentation Methods
+def add_noise(audio, noise_factor=0.005):
+    noise = np.random.randn(len(audio))
+    return audio + noise_factor * noise
+
+def time_stretch(audio, rate=1.0):
+    return librosa.effects.time_stretch(audio, rate=rate)
+
+def pitch_shift(audio, sr, n_steps=2):
+    return librosa.effects.pitch_shift(audio, sr=sr, n_steps=n_steps)
+
+def extract_features_with_augmentation(audio_path, target_sr=16000):
+    """
+    Returns a list of augmented features for training.
+    """
+    audio, sr = preprocess_audio(audio_path, target_sr=target_sr)
+    if audio is None:
+        return []
+    
+    aug_list = []
+    
+    # Original
+    aug_list.append(extract_log_mel_spectrogram(audio, sr=sr))
+    
+    # Add Noise
+    aug_list.append(extract_log_mel_spectrogram(add_noise(audio), sr=sr))
+    
+    # Time Stretch
+    aug_list.append(extract_log_mel_spectrogram(time_stretch(audio, rate=0.8), sr=sr))
+    aug_list.append(extract_log_mel_spectrogram(time_stretch(audio, rate=1.2), sr=sr))
+    
+    # Pitch Shift
+    aug_list.append(extract_log_mel_spectrogram(pitch_shift(audio, sr, n_steps=2), sr=sr))
+    aug_list.append(extract_log_mel_spectrogram(pitch_shift(audio, sr, n_steps=-2), sr=sr))
+    
+    # Filter out None results
+    return [aug for aug in aug_list if aug is not None]
+
+def convert_to_wav(file_stream, output_path):
+    """
+    Convert WebM or other formats to WAV using pydub.
     """
     try:
-        audio, sr = librosa.load(audio_path, sr=None)
-        
-        properties = {
-            'duration': librosa.get_duration(y=audio, sr=sr),
-            'sample_rate': sr,
-            'samples': len(audio),
-            'rms_energy': float(np.sqrt(np.mean(audio**2))),
-            'zero_crossing_rate': float(np.mean(librosa.feature.zero_crossing_rate(audio)))
-        }
-        
-        return properties
-    
+        audio = AudioSegment.from_file(file_stream)
+        audio.export(output_path, format="wav")
+        return True
     except Exception as e:
-        print(f"Error analyzing audio: {e}")
-        return None
+        print(f"Error converting audio to WAV: {e}")
+        return False
 
 
 if __name__ == '__main__':

@@ -1,4 +1,16 @@
+import React, { useEffect, useState } from 'react';
+
 function EmotionResult({ result, loading }) {
+    const [animate, setAnimate] = useState(false);
+
+    useEffect(() => {
+        if (!loading && result) {
+            setAnimate(false);
+            const timer = setTimeout(() => setAnimate(true), 100);
+            return () => clearTimeout(timer);
+        }
+    }, [result, loading]);
+
     if (loading) {
         return (
             <div className="emotion-result loading">
@@ -8,84 +20,66 @@ function EmotionResult({ result, loading }) {
         );
     }
 
-    if (!result) {
-        return null;
-    }
-
-    // Emotion emoji mapping
-    const emotionEmojis = {
-        'Happy': '😊',
-        'Sad': '😢',
-        'Angry': '😠',
-        'Fear': '😨',
-        'Surprise': '😲',
-        'Disgust': '🤢',
-        'Neutral': '😐'
-    };
-
-    // Emotion color mapping
-    const emotionColors = {
-        'Happy': '#FFD700',
-        'Sad': '#4A90E2',
-        'Angry': '#E74C3C',
-        'Fear': '#9B59B6',
-        'Surprise': '#F39C12',
-        'Disgust': '#16A085',
-        'Neutral': '#95A5A6'
-    };
+    if (!result) return null;
 
     const { emotion, confidence, all_probabilities } = result;
+
+    const emotionEmojis = {
+        'Happy': '😊', 'Sad': '😢', 'Angry': '😠',
+        'Fear': '😨', 'Surprise': '😲', 'Disgust': '🤢', 'Neutral': '😐'
+    };
+
+    const emotionColors = {
+        'Happy': '#FFD700', 'Sad': '#4A90E2', 'Angry': '#E74C3C',
+        'Fear': '#9B59B6', 'Surprise': '#F39C12', 'Disgust': '#16A085', 'Neutral': '#95A5A6'
+    };
+
     const emoji = emotionEmojis[emotion] || '🎭';
     const color = emotionColors[emotion] || '#3498DB';
 
     return (
-        <div className="emotion-result" style={{ borderColor: color }}>
-            {/* Main Result */}
-            <div className="main-result" style={{ backgroundColor: `${color}15` }}>
-                <div className="emotion-emoji" style={{ color }}>
-                    {emoji}
-                </div>
-                <h2 className="emotion-label" style={{ color }}>
-                    {emotion}
-                </h2>
-                <div className="confidence-container">
-                    <div className="confidence-label">Confidence</div>
-                    <div className="confidence-value">{confidence.toFixed(1)}%</div>
-                    <div className="progress-bar">
-                        <div
-                            className="progress-fill"
-                            style={{
-                                width: `${confidence}%`,
-                                backgroundColor: color
-                            }}
-                        ></div>
+        <div className={`emotion-result-container ${animate ? 'animate' : ''}`}>
+            <div className="main-prediction" style={{ borderColor: color }}>
+                <div className="prediction-header">
+                    <span className="main-emoji" style={{ color }}>{emoji}</span>
+                    <div className="prediction-meta">
+                        <h2>{emotion}</h2>
+                        <span className="confidence-text">{confidence.toFixed(1)}% Confidence</span>
                     </div>
+                </div>
+
+                <div className="main-progress-bar">
+                    <div
+                        className="bar-fill"
+                        style={{
+                            width: animate ? `${confidence}%` : '0%',
+                            backgroundColor: color
+                        }}
+                    ></div>
                 </div>
             </div>
 
-            {/* All Probabilities */}
             {all_probabilities && (
-                <div className="all-probabilities">
-                    <h3>📊 Detailed Analysis</h3>
-                    <div className="probability-grid">
+                <div className="probability-breakdown">
+                    <h3>Detailed Probabilities</h3>
+                    <div className="breakdown-list">
                         {Object.entries(all_probabilities)
                             .sort(([, a], [, b]) => b - a)
                             .map(([em, prob]) => (
-                                <div key={em} className="probability-item">
-                                    <div className="prob-header">
-                                        <span className="prob-emoji">{emotionEmojis[em]}</span>
-                                        <span className="prob-label">{em}</span>
+                                <div key={em} className="breakdown-item">
+                                    <div className="item-label">
+                                        <span>{emotionEmojis[em]} {em}</span>
+                                        <span>{prob.toFixed(1)}%</span>
                                     </div>
-                                    <div className="prob-bar">
+                                    <div className="item-bar-bg">
                                         <div
-                                            className="prob-fill"
+                                            className="item-bar-fill"
                                             style={{
-                                                width: `${prob}%`,
+                                                width: animate ? `${prob}%` : '0%',
                                                 backgroundColor: emotionColors[em]
                                             }}
                                         ></div>
                                     </div>
-                                    <span className="prob-value">{prob.toFixed(1)}%</span>
                                 </div>
                             ))}
                     </div>

@@ -4,9 +4,6 @@ const API_BASE_URL = 'http://127.0.0.1:5000/api';
 
 const api = axios.create({
     baseURL: API_BASE_URL,
-    headers: {
-        'Content-Type': 'application/json',
-    },
 });
 
 // Health check
@@ -15,7 +12,7 @@ export const checkHealth = async () => {
         const response = await api.get('/health');
         return response.data;
     } catch (error) {
-        throw error;
+        return { status: 'unhealthy', error: error.message };
     }
 };
 
@@ -33,7 +30,8 @@ export const predictEmotion = async (audioFile) => {
 
         return response.data;
     } catch (error) {
-        throw error.response?.data || error;
+        console.error('API Error:', error);
+        throw error.response?.data || { error: 'Failed to connect to the server' };
     }
 };
 
@@ -43,7 +41,7 @@ export const getHistory = async () => {
         const response = await api.get('/history');
         return response.data;
     } catch (error) {
-        throw error;
+        throw error.response?.data || error;
     }
 };
 
@@ -53,7 +51,7 @@ export const deleteHistory = async (predictionId) => {
         const response = await api.delete(`/history/${predictionId}`);
         return response.data;
     } catch (error) {
-        throw error;
+        throw error.response?.data || error;
     }
 };
 
@@ -63,7 +61,7 @@ export const getEmotions = async () => {
         const response = await api.get('/emotions');
         return response.data;
     } catch (error) {
-        throw error;
+        throw error.response?.data || error;
     }
 };
 
