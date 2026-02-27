@@ -1,8 +1,8 @@
 fastapi==0.109.2
-uvicorn==0.27.1
+unicorn==0.27.1
 python-multipart==0.0.9
-torch==2.0.1
-torchaudio===2.0.1
+torch==2.10.0
+torchaudio==2.10.0
 pydub==0.25.1
 numpy==1.24.3
 pandas==2.0.3
@@ -13,6 +13,6 @@ matplotlib==3.7.3
 scipy==1.11.4
 python-dotenv==1.0.1
 seaborn==0.13.2
-noisereduce>=3.0.0
+noisereduce==3.0.0
 flask==3.0.0
 flask-cors==4.0.0
