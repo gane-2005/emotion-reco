@@ -1,5 +1,4 @@
 fastapi==0.109.2
-unicorn==0.27.1
 python-multipart==0.0.9
 torch==2.10.0
 torchaudio==2.10.0
