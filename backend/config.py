@@ -18,7 +18,7 @@ DATABASE_PATH = os.path.join(BASE_DIR, 'emotions.db')
 
 # API configuration
 API_HOST = '0.0.0.0'
-API_PORT = 5000
+API_PORT = int(os.environ.get('PORT', 5000)00))e
 DEBUG = True
 
 # ── Emotion Labels ──────────────────────────────────────────────
