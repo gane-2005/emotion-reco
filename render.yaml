@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: emotion-reco-backend
+    env: python
+    rootDir: backend
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python app.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9
+      - key: PORT
+        value: 5000
+
+  - type: static
+    name: emotion-reco-frontend
+    rootDir: frontend
+    buildCommand: "npm install && npm run build"
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE
+        value: https://emotion-reco-backend.onrender.com
