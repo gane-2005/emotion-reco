@@ -76,7 +76,13 @@ function AudioRecorder({ onPredictionComplete, onLoading }) {
             chunksRef.current = [];
             recordingLengthRef.current = 0;
 
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: false,
+                    noiseSuppression: false,
+                    autoGainControl: false
+                }
+            });
             streamRef.current = stream;
 
             const AudioContext = window.AudioContext || window.webkitAudioContext;

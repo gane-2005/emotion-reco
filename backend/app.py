@@ -1,17 +1,24 @@
+"""
+Flask backend for Speech Emotion Analysis (legacy).
+Uses CNN-BiLSTM model with enhanced feature extraction.
+"""
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
-from werkzeug.utils import secure_filename
 import sys
+import traceback
+import torch
+import numpy as np
+from werkzeug.utils import secure_filename
 
 # Add utils to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'utils'))
 
 import config
 from utils.database import init_database, save_prediction, get_all_predictions, delete_prediction
-from utils.feature_extraction import extract_features
-import joblib
-import traceback
+from utils.feature_extraction import extract_features, convert_to_wav
+from model.model_pytorch import get_model
 
 app = Flask(__name__)
 CORS(app, origins=config.CORS_ORIGINS)
@@ -19,22 +26,21 @@ CORS(app, origins=config.CORS_ORIGINS)
 # Initialize database
 init_database()
 
-# Load model and scaler (will be created after training)
+# Load PyTorch model
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = None
-scaler = None
 
 try:
-    print(f"DEBUG: Checking model at {config.MODEL_PATH}")
-    print(f"DEBUG: Checking scaler at {config.SCALER_PATH}")
-    
-    if os.path.exists(config.MODEL_PATH) and os.path.exists(config.SCALER_PATH):
-        print("DEBUG: Files exist. Attempting to load...")
-        model = joblib.load(config.MODEL_PATH)
-        scaler = joblib.load(config.SCALER_PATH)
-        print("✅ Model and scaler loaded successfully")
+    if os.path.exists(config.MODEL_PATH):
+        model = get_model(num_classes=len(config.EMOTIONS),
+                          input_size=config.COMBINED_FEATURE_DIM)
+        model.load_state_dict(torch.load(config.MODEL_PATH, map_location=device))
+        model.to(device)
+        model.eval()
+        print(f"✅ PyTorch model loaded on {device}")
     else:
-        print(f"❌ Model or scaler not found at {config.MODEL_PATH} or {config.SCALER_PATH}")
-        print("⚠️  Model not found. Please train the model first using train_model.py")
+        print(f"⚠️  Model not found at {config.MODEL_PATH}")
+        print("   Run: python model/train_model.py --dataset ravdess")
 except Exception as e:
     print(f"⚠️  Error loading model: {e}")
     traceback.print_exc()
@@ -47,12 +53,10 @@ def allowed_file(filename):
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    """Health check endpoint."""
-    model_loaded = model is not None and scaler is not None
     return jsonify({
         'status': 'healthy',
-        'model_loaded': model_loaded,
-        'message': 'Speech Emotion Analysis API is running' if model_loaded else 'Model not loaded yet'
+        'model_loaded': model is not None,
+        'emotions': config.EMOTIONS,
     })
 
 
@@ -60,148 +64,121 @@ def health_check():
 def predict_emotion():
     """Predict emotion from uploaded audio file."""
     try:
-        # Check if model is loaded
-        if model is None or scaler is None:
+        if model is None:
             return jsonify({
-                'error': 'Model not loaded. Please train the model first.',
+                'error': 'Model not loaded. Train first: python model/train_model.py',
                 'success': False
             }), 500
-        
-        # Check if file is present
+
         if 'audio' not in request.files:
-            return jsonify({
-                'error': 'No audio file provided',
-                'success': False
-            }), 400
-        
+            return jsonify({'error': 'No audio file provided', 'success': False}), 400
+
         file = request.files['audio']
-        
-        # Check if filename is empty
         if file.filename == '':
-            return jsonify({
-                'error': 'No file selected',
-                'success': False
-            }), 400
-        
-        # Check file extension
+            return jsonify({'error': 'No file selected', 'success': False}), 400
+
         if not allowed_file(file.filename):
             return jsonify({
-                'error': f'Invalid file type. Allowed types: {", ".join(config.ALLOWED_EXTENSIONS)}',
+                'error': f'Invalid file type. Allowed: {", ".join(config.ALLOWED_EXTENSIONS)}',
                 'success': False
             }), 400
-        
+
         # Save file
         filename = secure_filename(file.filename)
         filepath = os.path.join(config.UPLOAD_FOLDER, filename)
         file.save(filepath)
-        print(f"DEBUG: Saved file to {filepath}, Size: {os.path.getsize(filepath)} bytes")
-        
-        
+
         try:
-            # Extract features
-            features = extract_features(filepath)
-            
+            final_path = filepath
+
+            # Convert WebM to WAV if needed
+            if filename.endswith('.webm'):
+                wav_path = filepath.replace('.webm', '.wav')
+                if convert_to_wav(filepath, wav_path):
+                    final_path = wav_path
+                    os.remove(filepath)
+
+            # Extract features (combined: MFCC + Chroma + ZCR + RMS)
+            features = extract_features(final_path, fixed_length=config.FIXED_LENGTH)
+
             if features is None:
                 return jsonify({
                     'error': 'Failed to extract features from audio',
                     'success': False
                 }), 400
-            
-            # Scale features
-            features_scaled = scaler.transform([features])
-            
-            # Predict emotion
-            prediction = model.predict(features_scaled)
-            probabilities = model.predict_proba(features_scaled)
-            
-            emotion = prediction[0]
-            confidence = float(max(probabilities[0])) * 100
-            
+
+            # Inference
+            input_tensor = torch.FloatTensor(features).unsqueeze(0).to(device)
+            with torch.no_grad():
+                outputs = model(input_tensor)
+                probabilities = torch.softmax(outputs, dim=1).cpu().numpy()[0]
+
+            prediction_idx = int(np.argmax(probabilities))
+            emotion = config.EMOTIONS[prediction_idx]
+            confidence = float(probabilities[prediction_idx]) * 100
+
             # Save to database
-            prediction_id = save_prediction(emotion, confidence, filename)
-            
-            # Clean up uploaded file
-            os.remove(filepath)
-            
+            prediction_id = save_prediction(emotion, round(confidence, 2), filename)
+
+            # Cleanup
+            if os.path.exists(final_path):
+                os.remove(final_path)
+
             return jsonify({
                 'success': True,
                 'emotion': emotion,
                 'confidence': round(confidence, 2),
                 'prediction_id': prediction_id,
                 'all_probabilities': {
-                    config.EMOTIONS[i]: round(float(probabilities[0][i]) * 100, 2)
+                    config.EMOTIONS[i]: round(float(probabilities[i]) * 100, 2)
                     for i in range(len(config.EMOTIONS))
-                }
+                },
             })
-        
+
         except Exception as e:
-            # Clean up file if error occurs
             if os.path.exists(filepath):
                 os.remove(filepath)
             raise e
-    
+
     except Exception as e:
-        print(f"Error in prediction: {e}")
+        print(f"Prediction error: {e}")
         traceback.print_exc()
-        return jsonify({
-            'error': str(e),
-            'success': False
-        }), 500
+        return jsonify({'error': str(e), 'success': False}), 500
 
 
 @app.route('/api/history', methods=['GET'])
 def get_history():
-    """Get all prediction history."""
     try:
         predictions = get_all_predictions()
         return jsonify({
             'success': True,
             'predictions': predictions,
-            'count': len(predictions)
+            'count': len(predictions),
         })
     except Exception as e:
-        return jsonify({
-            'error': str(e),
-            'success': False
-        }), 500
+        return jsonify({'error': str(e), 'success': False}), 500
 
 
 @app.route('/api/history/<int:prediction_id>', methods=['DELETE'])
 def delete_history_item(prediction_id):
-    """Delete a specific prediction from history."""
     try:
         delete_prediction(prediction_id)
-        return jsonify({
-            'success': True,
-            'message': f'Prediction {prediction_id} deleted'
-        })
+        return jsonify({'success': True, 'message': f'Prediction {prediction_id} deleted'})
     except Exception as e:
-        return jsonify({
-            'error': str(e),
-            'success': False
-        }), 500
+        return jsonify({'error': str(e), 'success': False}), 500
 
 
 @app.route('/api/emotions', methods=['GET'])
 def get_emotions():
-    """Get list of supported emotions."""
-    return jsonify({
-        'success': True,
-        'emotions': config.EMOTIONS
-    })
+    return jsonify({'success': True, 'emotions': config.EMOTIONS})
 
 
 if __name__ == '__main__':
-    print("\n" + "="*60)
-    print("🎤 Speech Emotion Analysis Using Voice - Backend API")
-    print("="*60)
-    print(f"Server running at: http://{config.API_HOST}:{config.API_PORT}")
-    print(f"Upload folder: {config.UPLOAD_FOLDER}")
-    print(f"Database: {config.DATABASE_PATH}")
-    print("="*60 + "\n")
-    
-    app.run(
-        host=config.API_HOST,
-        port=config.API_PORT,
-        debug=config.DEBUG
-    )
+    print("\n" + "=" * 60)
+    print("🎤 Speech Emotion Analysis – Backend API (Flask)")
+    print("=" * 60)
+    print(f"Server: http://{config.API_HOST}:{config.API_PORT}")
+    print(f"Emotions: {config.EMOTIONS}")
+    print("=" * 60 + "\n")
+
+    app.run(host=config.API_HOST, port=config.API_PORT, debug=config.DEBUG)
