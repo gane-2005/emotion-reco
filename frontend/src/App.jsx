@@ -4,6 +4,7 @@ import FileUpload from './components/FileUpload';
 import AudioRecorder from './components/AudioRecorder';
 import EmotionResult from './components/EmotionResult';
 import HistoryTable from './components/HistoryTable';
+import MoodDashboard from './components/MoodDashboard';
 import { checkHealth, getHistory } from './utils/api';
 
 function App() {
@@ -11,6 +12,7 @@ function App() {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [healthStatus, setHealthStatus] = useState(null);
+  const [statsKey, setStatsKey] = useState(0);
 
   useEffect(() => {
     // Check API health on mount
@@ -33,6 +35,7 @@ function App() {
       const data = await getHistory();
       if (data.success) {
         setHistory(data.predictions);
+        setStatsKey(prev => prev + 1); // Refresh dashboard when history changes
       }
     } catch (error) {
       console.error('Failed to load history:', error);
@@ -114,6 +117,12 @@ function App() {
               <EmotionResult result={result} loading={loading} />
             </section>
           )}
+
+          {/* Dashboard Section */}
+          <section className="dashboard-section">
+            <h2>📈 Mood Trends Dashboard</h2>
+            <MoodDashboard key={statsKey} />
+          </section>
 
           {/* History Section */}
           <section className="history-section">

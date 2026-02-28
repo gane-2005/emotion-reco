@@ -81,15 +81,59 @@ def delete_prediction(prediction_id):
     conn.close()
 
 
-def clear_all_predictions():
-    """Clear all predictions from the database."""
+def get_stats():
+    """Get statistics for the mood dashboard."""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     
-    cursor.execute('DELETE FROM predictions')
+    # Total predictions
+    cursor.execute('SELECT COUNT(*) FROM predictions')
+    total = cursor.fetchone()[0]
     
-    conn.commit()
+    # Predictions today
+    cursor.execute("SELECT COUNT(*) FROM predictions WHERE date(timestamp) = date('now', 'localtime')")
+    today = cursor.fetchone()[0]
+    
+    # Predictions this week
+    cursor.execute("SELECT COUNT(*) FROM predictions WHERE date(timestamp) >= date('now', 'localtime', '-7 days')")
+    this_week = cursor.fetchone()[0]
+    
+    # Most common emotion
+    cursor.execute('''
+        SELECT emotion, COUNT(*) as count 
+        FROM predictions 
+        GROUP BY emotion 
+        ORDER BY count DESC 
+        LIMIT 1
+    ''')
+    row = cursor.fetchone()
+    most_common = row[0] if row else None
+    
+    # Emotion distribution
+    cursor.execute('''
+        SELECT emotion, COUNT(*) as count, AVG(confidence) as avg_conf 
+        FROM predictions 
+        GROUP BY emotion 
+        ORDER BY count DESC
+    ''')
+    distribution = []
+    for row in cursor.fetchall():
+        distribution.append({
+            'emotion': row[0],
+            'count': row[1],
+            'avg_confidence': round(row[2], 2)
+        })
+    
     conn.close()
+    
+    return {
+        'success': True,
+        'total': total,
+        'today': today,
+        'this_week': this_week,
+        'most_common_emotion': most_common,
+        'distribution': distribution
+    }
 
 
 if __name__ == '__main__':

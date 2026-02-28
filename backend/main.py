@@ -167,6 +167,12 @@ async def get_emotions():
     return {"success": True, "emotions": EMOTIONS}
 
 
+@app.get("/api/stats")
+async def get_stats_api():
+    from utils.database import get_stats
+    return get_stats()
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host=config.API_HOST, port=config.API_PORT)

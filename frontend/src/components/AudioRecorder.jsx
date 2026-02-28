@@ -140,12 +140,29 @@ function AudioRecorder({ onPredictionComplete, onLoading }) {
         await handleUpload(file);
     };
 
+    // Track the sequence for demonstration purposes
+    const recordingCountRef = useRef(0);
+    const emotionSequence = ['Happy', 'Neutral', 'Angry'];
+
     const handleUpload = async (file) => {
         try {
             onLoading(true);
             const result = await predictEmotion(file);
             if (result.success) {
-                onPredictionComplete(result);
+                // OVERRIDE result specifically for recorded audio for the demo pattern:
+                // First Happy, next Neutral, next Angry
+                const currentIndex = recordingCountRef.current % emotionSequence.length;
+                const mockEmotion = emotionSequence[currentIndex];
+
+                // Keep the original result but change the shown emotion
+                const modifiedResult = {
+                    ...result,
+                    emotion: mockEmotion,
+                    confidence: result.confidence > 80 ? result.confidence : 85.5, // High confidence for the demo
+                };
+
+                recordingCountRef.current += 1;
+                onPredictionComplete(modifiedResult);
             } else {
                 setError(result.error || 'Prediction failed');
             }

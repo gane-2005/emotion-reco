@@ -1,0 +1,9 @@
+Scanning d:\learnthonproject\speech-emotion-analysis\dataset\RAVDESS
+Total files tested: 160
+Prediction counts: {'Angry': 60, 'Happy': 20, 'Neutral': 64, 'Sad': 16}
+
+Best samples found:
+Angry: 99.99% -> d:\learnthonproject\speech-emotion-analysis\dataset\RAVDESS\Actor_15\03-01-08-01-01-01-15.wav
+Happy: 100.00% -> d:\learnthonproject\speech-emotion-analysis\dataset\RAVDESS\Actor_11\03-01-03-01-01-01-11.wav
+Neutral: 99.64% -> d:\learnthonproject\speech-emotion-analysis\dataset\RAVDESS\Actor_06\03-01-01-01-01-01-06.wav
+Sad: 99.87% -> d:\learnthonproject\speech-emotion-analysis\dataset\RAVDESS\Actor_09\03-01-04-01-01-01-09.wav
